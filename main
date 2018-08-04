@@ -1,0 +1,230 @@
+
+
+
+
+
+
+#include "led.h"
+#include "delay.h"
+#include "sys.h"
+#include "can.h"
+#include "24cxx.h"	
+#include "modbus.h"
+#include "ads1110.h"
+#include "timer.h"
+#include "get_data.h"
+#include "ltc6803-2.h"	
+#include "wdg.h"
+#include "spi.h"
+#include "calculate.h"
+
+#include "sr.h"
+
+
+extern u16 Valtagez;		 //电压
+extern short Currentz;   //电流
+extern u8 Socf;        //soc
+extern u8 BatCap;      //剩余容量
+extern u8 Alarmf;      //报警信号
+extern u8 protectf;    //保护状态
+extern u8 NormalSta ;  //BMS正常
+extern u8 ChargerCummand;  //充电机命令
+extern u8 ChargerNumber;	   //BMS设置的充电号
+extern u8 BMSSta;            //BMS当前状态
+extern u8 ChargerSta ;       //充电机状态
+extern u16 SBHVoltage ;      //单只最高电压
+extern u16 SBLVoltage;     //单只最低电压
+u8 CCC=0;
+//---------------------------------------------
+u16 chargersta=0;
+u16 charge_Addr=0,charge_on=1,BMSnum=0,cdzt=0,chargeXO=8,ZIresetm=0;
+//---------------------------------------------
+
+u8 Resetm=0;							                     //复位机械臂 new add
+u32 RS485_Baudrate=9600;                       //通讯波特率
+u8 RS485_Parity=0;                              //0无校验；1奇校验；2偶校验
+u8 RS485_Addr=1;                                //从机地址
+u16 RS485_Frame_Distance=4;                     //数据帧最小间隔（ms),超过此时间则认为是下一帧
+
+u8 RS485_RX_BUFF[512];                         //接收缓冲区
+u16 RS485_RX_CNT=0;                             //接收计数器
+u8 RS485_FrameFlag=0;                           //帧结束标记
+u8 RS485_TX_BUFF[512];                         //发送缓冲区
+u16 RS485_TX_CNT=0;                             //发送计数器
+
+u16 CellV[16]={0x0000};//单支电压
+u16 CellT[4]={0x0};//单支温度
+u16 Total_CellV;    //总电压
+u16 CellV_Buff[15]; //电池电压缓存区
+u16 CellT_Buff[2];          //温度存储区
+u8 timeT=0;
+u16 *Modbus_HoldReg[512];                      //保持寄存器指针
+
+u8 uoutalarm_on=0,uoutalarm_stat=0,suoutalarm_on=0,suoutalarm_stat=0;       //过压标志
+u8 uoutcut_on=0,uoutcut_stat=0,suoutcut_on=0,suoutcut_stat=0;              //过压
+
+u8 ulowalarm_on=0,ulowalarm_stat=0,sulowalarm_on=0,sulowalarm_stat=0;  //欠压报警            
+u8 ulowcut_on,ulowcut_stat=0,sulowcut_on=0,sulowcut_stat=0;		//欠压切断
+u8 temalarm_on=0,temalarm_stat=0;		//过温报警
+u8 temcut_on=0,temcut_stat=0;
+u8 soc_num=0;//soc低
+u8 soc_low=0;
+u8 soc_on;
+
+
+u8 I_on=0,Icut_stat=0,Ichargecut=0,Idischargecut=0;
+u8 Ialarm_stat=0;
+u8 time1=0,time2=0,time3=0;
+u16 sys_data[42]={0x0};
+u16 TempT[2];
+u8 canbuf1[8]={0},canbuf2[8]={0},canbuf[8]={0};
+
+	float T1,T2;
+
+u16 I;                     //参与比较
+	float current_soc;
+union number
+{
+	float f;
+	uint8_t c[4];
+}my_num;
+
+
+ int main(void)
+ {	
+	 u8 key;
+ 
+	delay_init();	    	 //延时函数初始化	  
+  ADS1110_Init(); 	 	
+	AT24CXX_Init();			//IIC初始化 
+  RS485_Init();
+  initAll();          //zigbee 初始化 
+  Start_Init();           //信号点初始化
+  LTC_Init();           //6803使能
+	 LTC6803Init(0x80,0x49);        //6803初始化
+		LTC6803Init(0x81,0x4e);        //6803初始化
+//CAN_Mode_Init(CAN_SJW_1tq,CAN_BS2_7tq,CAN_BS1_8tq,9,CAN_Mode_Normal);//CAN初始化环回模式,波特率250Kbps    
+  CAN_Mode_Init(CAN_SJW_1tq,CAN_BS2_2tq,CAN_BS1_3tq,48,CAN_Mode_Normal);//CAN初始化环回模式,波特率125Kbps
+	 
+
+	 Para_Init();  //得到设定值
+	 TIM3_Int_Init(999,7199);         //定时器0.1s
+
+	 IWDG_Init(4,625);    //与分频数为64,重载值为625,溢出时间为1s	   
+
+	
+
+
+while(1)
+	{
+//		RS485_Addr=ChargerNumber;
+		RS485_Service();
+if(time1>=5)
+{
+//		sys_data[40]=ChargerCummand;			//给充电机的充电命令
+	 
+    get_data();
+		LED2=!LED2;
+ 
+	  time1=0;
+	  action();
+	
+}
+      canbuf1[0]=Valtagez;					//电压
+			canbuf1[1]=Valtagez>>8;				
+			canbuf1[2]=Currentz;					//电流
+			canbuf1[3]=Currentz>>8;
+			canbuf1[4]=Socf;							//SOC
+			canbuf1[5]=BatCap;						//剩余容量
+			//canbuf1[6]=Alarmf;		//心跳
+			canbuf1[7]=protectf;
+      
+      canbuf2[0]=NormalSta;					//正常帧
+			canbuf2[1]=BMSSta;						//BMS当前状态
+			canbuf2[2]=ChargerNumber;			//BMS设置的充电号
+			canbuf2[3]=ChargerSta;				//充电机状态
+			canbuf2[4]=SBHVoltage;				//单芯最高电压
+			canbuf2[5]=SBHVoltage>>8;
+			canbuf2[6]=SBLVoltage;				//单芯最低电压
+			canbuf2[7]=SBLVoltage>>8;
+
+ if(time3>=10)
+ {
+ 
+       Alarmf^=0x10;
+			 canbuf1[6]=Alarmf;
+       time3=0;
+ 
+ }
+
+
+
+
+
+
+
+
+	if(time2>=10)
+		{
+			//Alarmf^=0x10;
+			//canbuf1[6]=Alarmf;		//心跳
+			time2=0;
+			Can_Send_Msg(canbuf1,0x10);//发送8个字节 
+			Can_Send_Msg(canbuf2,0x11);//发送8个字节 
+		}
+//		if(time2==11)
+//		{
+//			time2=0;
+//			Can_Send_Msg(canbuf2,0x11);//发送8个字节 
+//			
+//		}
+		
+		key=Can_Receive_Msg(canbuf);
+		if(key)
+		{
+			if(!canbuf[0])
+			{ChargerCummand=canbuf[1];
+				ChargerNumber=canbuf[2];
+				Resetm=canbuf[3];
+		//Can_Send_Msg(canbuf1,0x10);//发送8个字节 
+		//Can_Send_Msg(canbuf2,0x11);//发送8个字节 
+		}
+
+	}
+if(timeT>50)
+{   
+	  ReadTemp(0x80,0x49);                        //读两个温度
+		sys_data[3]=CellT_Buff[0];
+		sys_data[4]=(u16)CellT_Buff[1];
+	  if(charge_Addr==0){cdzt=0;chargeXO=8;}
+		
+//	delay_ms(5);
+//										ReadTemp(0x81,0x4e);   //读两个温度
+//						sys_data[5]=CellT_Buff[0];
+//			    	sys_data[6]=CellT_Buff[1];
+//           timeT=0;
+}		
+	else
+  		timeT++;
+//     用CAN时候  充电ID由can决定的语句
+			 			 if(ChargerNumber>0)
+			 {
+	           charge_Addr=ChargerNumber;
+		   }		 
+				else  
+					   {charge_Addr=0;}
+	
+			ChargerSta=cdzt;
+//			CCC=ChargerCummand^0x01;		 
+//			charge_on=(u16)CCC;
+		charge_on=ChargerCummand;
+	    ZIresetm = Resetm;
+      loopAll();
+			delay_ms(5);
+			
+
+}
+
+	
+	}
+	
